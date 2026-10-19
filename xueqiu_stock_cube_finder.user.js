@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         雪球 · 按股票找持仓组合
 // @namespace    https://xueqiu.com/
-// @version      1.7.1
+// @version      1.7.2
 // @updateURL    https://raw.githubusercontent.com/wsvv/xueqiu_stock_cube_finder/main/xueqiu_stock_cube_finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/wsvv/xueqiu_stock_cube_finder/main/xueqiu_stock_cube_finder.user.js
-// @description  按股票反查组合，支持全量排序、股票结果24小时缓存、永久关停缓存；单条/全部同步更新调仓与核验真实持仓、独立缓存；宽屏自动扩展、窄屏卡片布局、固定操作入口，并导出 XLSX。
+// @description  按股票反查组合，支持全量排序、股票结果24小时缓存、永久关停缓存；单条/全部同步更新调仓与核验真实持仓、独立缓存；适中宽度的紧凑表格、右侧操作入口始终可见，并导出 XLSX。
 // @author       ChatGPT
 // @match        https://xueqiu.com/*
 // @match        https://www.xueqiu.com/*
@@ -82,8 +82,8 @@
     color: white; background: #1366cf; border-radius: 28px; box-shadow: 0 8px 25px #0d3c8260; font-size: 14px; font-weight: 700; }
   .fab:hover { background: #0e55b2; }
   .panel { position: fixed; left: 50%; transform: translateX(-50%); bottom: 72px; z-index: 2147483646;
-    width: min(1640px, calc(100vw - 24px)); max-width: calc(100vw - 24px);
-    height: min(790px, calc(100vh - 92px)); display: flex; flex-direction: column; background: #fff;
+    width: min(1120px, calc(100vw - 56px)); max-width: calc(100vw - 56px);
+    height: min(700px, calc(100vh - 124px)); display: flex; flex-direction: column; background: #fff;
     border: 1px solid #dfe7f0; border-radius: 15px; box-shadow: 0 20px 65px #142d5270; overflow: hidden;
     color: #192a40; font-size: 13px; }
   .hidden { display: none !important; }
@@ -128,15 +128,19 @@
   .state.held { color: #087c5b; font-weight: 700; }
   .state.stale { color: #b37e2c; }
   .state.pending { color: #8090a2; }
+  /* 固定表格布局，避免长列把操作按钮挤出窗口。 */
   .tablebox { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; border: 1px solid #e1e7ef; border-radius: 9px; background: #fff; }
-  table { width: 100%; table-layout: auto; border-spacing: 0; border-collapse: separate; text-align: left; font-size: 12px; min-width: 0; }
+  table { width: 100%; table-layout: fixed; border-spacing: 0; border-collapse: separate; text-align: left; font-size: 12px; min-width: 0; }
   th { position: sticky; top: 0; z-index: 1; background: #eff4f9; color: #51657d; white-space: nowrap; font-weight: 700;
-    padding: 10px 7px; border-bottom: 1px solid #dce5ef; }
-  td { border-bottom: 1px solid #eef2f6; padding: 9px 7px; vertical-align: middle; white-space: nowrap; }
-  td:first-child { max-width: 180px; overflow-wrap: anywhere; white-space: normal; }
-  td:nth-child(2) { max-width: 120px; overflow-wrap: anywhere; white-space: normal; }
+    padding: 10px 4px; border-bottom: 1px solid #dce5ef; overflow: hidden; text-overflow: ellipsis; }
+  td { border-bottom: 1px solid #eef2f6; padding: 9px 4px; vertical-align: middle; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  td:first-child, td:nth-child(2) { overflow-wrap: normal; white-space: nowrap; }
+  td:first-child a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  td:nth-child(11) { font-size: 10.8px; letter-spacing: -.2px; }
   th:last-child { position: sticky; right: 0; z-index: 3; box-shadow: -6px 0 10px -8px #65768e; }
   td:last-child { position: sticky; right: 0; z-index: 2; background: #fff; box-shadow: -6px 0 10px -8px #65768e; }
+  .rowRefresh { width: 100%; padding: 5px 2px; font-size: 11px; }
   tbody tr:hover { background: #f7faff; }
   tbody tr:hover td:last-child { background: #f7faff; }
   td .sub { display: block; margin-top: 3px; font-size: 11px; color: #8291a1; }
@@ -147,33 +151,27 @@
   .empty { padding: 42px 20px; text-align: center; color: #8492a5; }
   .footer { display: flex; justify-content: space-between; gap: 8px; padding-top: 4px; align-items: center; font-size: 11px; color: #8390a1; }
   .footer .note { max-width: 90%; }
-  /* 小屏幕不强行压缩12列：改为多列卡片，每条记录的操作始终可见。 */
-  @media (max-width: 1320px) {
-    .tablebox { overflow-x: hidden; }
-    table, tbody { display: block; width: 100%; }
-    thead { display: none; }
-    tbody { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 465px), 1fr)); align-content: start; gap: 10px; padding: 10px; }
-    tbody tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start;
-      border: 1px solid #e1e7ef; border-radius: 9px; overflow: hidden; background: #fff; min-width: 0; }
-    td, td:last-child { display: block; position: static; min-width: 0; max-width: none; overflow-wrap: anywhere;
-      word-break: normal; white-space: normal; padding: 7px 8px; border-bottom: 1px solid #eef2f6; box-shadow: none; }
-    td::before { content: attr(data-label); display: block; font-size: 10px; line-height: 1.35;
-      color: #7b8a9d; font-weight: 500; margin-bottom: 4px; }
-    td:first-child { grid-column: span 2; }
-    td:nth-child(11) { grid-column: span 2; }
-    td:last-child { grid-column: 1 / -1; border-bottom: none; }
-    .rowRefresh { width: 100%; padding: 8px 10px; }
-    tbody tr:hover td:last-child { background: transparent; }
+  /* 保留传统表格；视口偏窄时依次收起次要列，绝不变成卡片。 */
+  @media (max-width: 1190px) {
+    .panel { width: calc(100vw - 40px); max-width: calc(100vw - 40px); }
+    .col-monthly, .col-drawdown, thead th:nth-child(8), thead th:nth-child(9), tbody td:nth-child(8), tbody td:nth-child(9) { display: none; }
   }
-  @media (max-width: 600px) {
-    .fab { right: 14px; bottom: 16px; }
-    .panel { bottom: 67px; width: calc(100vw - 16px); max-width: calc(100vw - 16px); height: calc(100vh - 84px); }
-    .body { padding: 11px; }
-    .header { padding: 12px; }
-    h1 { font-size: 16px; }
-    tbody { grid-template-columns: minmax(0, 1fr); padding: 6px; }
-    td { padding: 7px 6px; }
+  @media (max-width: 890px) {
+    .col-annual, thead th:nth-child(7), tbody td:nth-child(7) { display: none; }
+    .body { padding: 10px; gap: 7px; }
+    .header { padding: 12px 14px; }
     .footer .note { max-width: none; }
+  }
+  @media (max-width: 680px) {
+    .fab { right: 14px; bottom: 16px; }
+    .panel { bottom: 62px; width: calc(100vw - 16px); max-width: calc(100vw - 16px); height: calc(100vh - 78px); }
+    .body { padding: 8px; }
+    .col-owner, .col-gain, .col-closed, thead th:nth-child(2), thead th:nth-child(6), thead th:nth-child(10),
+    tbody td:nth-child(2), tbody td:nth-child(6), tbody td:nth-child(10) { display: none; }
+    table { font-size: 10.5px; }
+    th, td { padding-left: 3px; padding-right: 3px; }
+    .rowRefresh { font-size: 10px; }
+    h1 { font-size: 16px; }
   }
 </style>
 <button class="fab" type="button" title="按股票名称查询持仓组合">📊 查持仓组合</button>
@@ -247,6 +245,12 @@
     <div class="tablebox">
       <div class="empty">查询后将在这里展示组合名称、主理人和仓位比例。</div>
       <table class="hidden">
+        <colgroup>
+          <col style="width:14%"><col class="col-owner" style="width:8%"><col style="width:7%"><col style="width:7%">
+          <col style="width:8%"><col class="col-gain" style="width:7%"><col class="col-annual" style="width:7%">
+          <col class="col-monthly" style="width:6%"><col class="col-drawdown" style="width:6%"><col class="col-closed" style="width:8%">
+          <col style="width:13%"><col style="width:9%">
+        </colgroup>
         <thead><tr>
           <th>组合名称</th><th>主理人</th><th>搜索仓位</th><th>当前仓位</th><th>持仓核验</th><th>累计收益</th><th>年化收益</th><th>近30日</th><th>回撤</th><th>关停状态</th><th>最近实际调仓</th><th>操作</th>
         </tr></thead>
@@ -255,7 +259,7 @@
     </div>
     <div class="footer">
       <div class="note">只统计 list，不混入 recommend。完整列表在有效期内优先读取本地缓存；点击“强制刷新列表”绕过缓存。关停状态永久缓存；当前持仓缓存1小时，过期不作为确认结论；调仓缓存24小时；不存储登录凭证。</div>
-      <span>v1.7</span>
+      <span>v1.7.2</span>
     </div>
   </div>
 </section>`;
@@ -714,14 +718,17 @@
       const action = document.createElement('td');
       const refresh = document.createElement('button');
       refresh.type = 'button'; refresh.className = 'rowRefresh';
-      refresh.textContent = '↻ 更新调仓+持仓';
+      refresh.textContent = '↻ 调仓+持仓';
       refresh.title = `同时更新 ${row.symbol} 的最近主动调仓及完整持仓快照（各1次请求）`;
       refresh.disabled = state.busy || state.auxBusy;
       refresh.addEventListener('click', () => refreshRebalancing([row.symbol], 'single'));
       action.appendChild(refresh); tr.appendChild(action);
-      // 窄屏卡片模式直接使用表头作为字段标签，保证新增列也会自动适配。
+      // 表格在窄视口隐藏部分收益列；被收起的字段始终保留在 Excel 导出中。
       const columnNames = ['组合名称', '主理人', '搜索仓位', '当前仓位', '持仓核验', '累计收益', '年化收益', '近30日', '回撤', '关停状态', '最近实际调仓', '操作'];
-      [...tr.children].forEach((cell, index) => cell.dataset.label = columnNames[index] || '详情');
+      [...tr.children].forEach((cell, index) => {
+        cell.dataset.label = columnNames[index] || '详情';
+        if (!cell.title && index !== 11) cell.title = String(cell.textContent || '').trim();
+      });
       frag.appendChild(tr);
     }
     ui.tableBody.replaceChildren(frag);
