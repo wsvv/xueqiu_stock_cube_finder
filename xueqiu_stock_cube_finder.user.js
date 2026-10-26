@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         雪球 · 按股票找持仓组合
 // @namespace    https://xueqiu.com/
-// @version      1.7.2
+// @version      1.7.3
 // @updateURL    https://raw.githubusercontent.com/wsvv/xueqiu_stock_cube_finder/main/xueqiu_stock_cube_finder.user.js
 // @downloadURL  https://raw.githubusercontent.com/wsvv/xueqiu_stock_cube_finder/main/xueqiu_stock_cube_finder.user.js
 // @description  按股票反查组合，支持全量排序、股票结果24小时缓存、永久关停缓存；单条/全部同步更新调仓与核验真实持仓、独立缓存；适中宽度的紧凑表格、右侧操作入口始终可见，并导出 XLSX。
@@ -32,7 +32,9 @@
   const QUOTE_BATCH_SIZE = 30;
   const QUOTE_REQUEST_INTERVAL = 500;
   const RB_CONCURRENCY = 2;
-  const RB_REQUEST_INTERVAL = 500;
+  const RB_REQUEST_INTERVAL = 800;
+  const RB_RETRY_COUNT = 2;
+  const RB_RETRY_BASE_MS = 1400;
   const LEGACY_CACHE_KEY = 'xq_stock_cube_finder_cache_v11';
   const TEMP_CACHE_KEY = 'xq_stock_cube_finder_recent_v13';
   const PREVIOUS_TEMP_CACHE_KEY = 'xq_stock_cube_finder_recent_v12';
@@ -65,7 +67,8 @@
     auxController: null,
     quoteStates: new Map(),
     rebalancingStates: new Map(),
-    holdingStates: new Map() // 每个组合一次保存完整当前持仓，可以跨股票重复核对
+    holdingStates: new Map(), // 每个组合一次保存完整当前持仓，可以跨股票重复核对
+    rebalanceErrors: new Map()
   };
 
   const host = document.createElement('div');
@@ -205,7 +208,7 @@
         <option value="annual-desc">年化收益高 → 低</option>
         <option value="monthly-desc">近30日收益高 → 低</option>
         <option value="drawdown-desc">回撤较小优先</option>
-        <option value="rebalance-desc">最近实际调仓优先（需核验全部未关停组合）</option>
+        <option value="rebalance-desc">最近实际调仓优先（缺失排后）</option>
       </select>
       <label for="xqStatus">状态</label>
       <select class="statusFilter mini" id="xqStatus">
@@ -259,7 +262,7 @@
     </div>
     <div class="footer">
       <div class="note">只统计 list，不混入 recommend。完整列表在有效期内优先读取本地缓存；点击“强制刷新列表”绕过缓存。关停状态永久缓存；当前持仓缓存1小时，过期不作为确认结论；调仓缓存24小时；不存储登录凭证。</div>
-      <span>v1.7.2</span>
+      <span>v1.7.3</span>
     </div>
   </div>
 </section>`;
@@ -520,6 +523,7 @@
     }
     state.quoteStates.clear();
     state.rebalancingStates.clear();
+    state.rebalanceErrors.clear();
     state.holdingStates.clear();
     searchCache = {};
     if (state.searchSource === 'cache') state.searchSource = 'memory';
@@ -622,8 +626,8 @@
         const bc = getQuote(b.symbol)?.status === 'closed';
         if (ac !== bc) return ac ? 1 : -1; // 排序时关停组合排后
       }
-      const va = field === 'rebalance' ? num(getRb(a.symbol)?.timestamp) : num(a[fields[field] || 'weight']);
-      const vb = field === 'rebalance' ? num(getRb(b.symbol)?.timestamp) : num(b[fields[field] || 'weight']);
+      const va = field === 'rebalance' ? (num(getRb(a.symbol)?.timestamp) || null) : num(a[fields[field] || 'weight']);
+      const vb = field === 'rebalance' ? (num(getRb(b.symbol)?.timestamp) || null) : num(b[fields[field] || 'weight']);
       if (va === null && vb === null) return String(a.symbol).localeCompare(String(b.symbol));
       if (va === null) return 1;
       if (vb === null) return -1;
@@ -640,14 +644,11 @@
     const rbStale = eligible.filter(r => !!getRb(r.symbol) && !isRbFresh(r.symbol)).length;
     const verified = eligible.filter(r => ['held', 'absent'].includes(holdingCheck(r.symbol).status)).length;
     const recentSort = ui.sort.querySelector('option[value="rebalance-desc"]');
-    recentSort.disabled = rows.length === 0 || rbLoaded !== eligible.length;
-    if (recentSort.disabled && ui.sort.value === 'rebalance-desc') {
-      ui.sort.value = 'weight-desc';
-      rows = sortableRows();
-    }
+    // 即使仅部分组合获取成功，也支持按已知时间排序；无时间记录排最后。
+    recentSort.disabled = rows.length === 0;
     const closedCount = [...state.quoteStates.values()].filter(v => v?.status === 'closed').length;
     ui.filterCount.textContent = state.data.size ? `显示 ${rows.length} / ${state.data.size} 条 · 全量排序` : '';
-    ui.cacheInfo.textContent = `列表缓存 ${Object.keys(searchCache).length} 只股票；关停永久缓存 ${closedCount} 个；当前筛选未关停调仓已核验 ${rbLoaded}/${eligible.length}${rbStale ? `，旧缓存 ${rbStale}` : ''}；实时持仓已核验 ${verified}/${eligible.length}。`;
+    ui.cacheInfo.textContent = `列表缓存 ${Object.keys(searchCache).length} 只股票；关停永久缓存 ${closedCount} 个；当前筛选未关停调仓已核验 ${rbLoaded}/${eligible.length}${rbStale ? `，旧缓存 ${rbStale}` : ''}，请求失败 ${eligible.filter(r => state.rebalanceErrors.has(r.symbol)).length}；允许按已有调仓时间排序，缺失排后；实时持仓已核验 ${verified}/${eligible.length}。`;
     // 详情更新按钮需要随着请求状态切换为禁用。
     ui.table.classList.toggle('hidden', !rows.length);
     ui.empty.classList.toggle('hidden', !!rows.length);
@@ -714,6 +715,11 @@
         mark.className = 'cell-status'; mark.textContent = '旧缓存'; recent.appendChild(mark);
       }
       if (rb) recent.title = `最后核验：${formatDate(rb.savedAt)}（北京时间） · 来源：历史调仓 · ${rb.category || '未确认'} · ID ${rb.id || '未知'}`;
+      const rbError = state.rebalanceErrors.get(row.symbol);
+      if (rbError) {
+        if (!rb) recent.textContent = '获取失败（可重试）';
+        recent.title = `调仓历史失败：${rbError}；可单条刷新或批量补齐`;
+      }
       tr.appendChild(recent);
       const action = document.createElement('td');
       const refresh = document.createElement('button');
@@ -903,13 +909,15 @@
   async function refreshRebalancing(symbols, mode = 'all') {
     if (state.busy || state.auxBusy || !state.data.size) return;
     const unique = [...new Set(symbols)].filter(sym => state.data.has(sym));
-    const targets = mode === 'single' ? unique : unique.filter(sym => getQuote(sym)?.status !== 'closed');
+    const targets = mode === 'single' ? unique : unique.filter(sym => getQuote(sym)?.status !== 'closed' && (!isRbFresh(sym) || !isHoldingFresh(sym)));
+    const countHistory = targets.filter(sym => mode === 'single' || !isRbFresh(sym)).length;
+    const countHoldings = targets.filter(sym => mode === 'single' || !isHoldingFresh(sym)).length;
     if (!targets.length) {
-      setStatus(mode === 'single' ? '找不到对应组合。' : '没有需要更新的未关停组合。');
+      setStatus(mode === 'single' ? '找不到对应组合。' : '未关停组合的调仓和持仓缓存都在有效期内，不需要重复请求。');
       return;
     }
     if (mode !== 'single' && targets.length > 100 &&
-      !window.confirm(`将检查 ${targets.length} 个未关停或状态未知的组合，最多 ${targets.length * 2} 次接口请求（调仓历史+当前持仓），不跳过旧缓存。\n并发上限 ${RB_CONCURRENCY}，已关停组合不请求。是否继续？`)) return;
+      !window.confirm(`将检查 ${targets.length} 个未关停或状态未知的组合，预计 ${countHistory} 次调仓 + ${countHoldings} 次持仓请求（不计临时失败重试），仅补齐缺失或过期的数据。\n并发上限 ${RB_CONCURRENCY}，已关停组合不请求。是否继续？`)) return;
 
     const controller = new AbortController();
     const currentRun = state.runId;
@@ -918,13 +926,25 @@
     let cursor = 0, completed = 0, rbOk = 0, holdingOk = 0, rbFailed = 0, holdingFailed = 0;
     let throttled = false;
     const kind = mode === 'single' ? '单条' : '全部未关停';
-    setStatus(`正在${kind}同步更新调仓及真实持仓：0 / ${targets.length}（最多2请求/组合，并发上限 ${RB_CONCURRENCY}）…`);
+    setStatus(`正在${kind}更新：0 / ${targets.length}（调仓 ${countHistory}、持仓 ${countHoldings}；并发 ${RB_CONCURRENCY}）…`);
     async function checkedRequest(path) {
       const data = await requestJson(path, controller.signal);
       if (data?.error_code && data.error_code !== 0) throw new Error(data.error_description || `雪球接口错误 ${data.error_code}`);
       if (data?.success === false || (data?.code != null && data.code !== 200))
         throw new Error(data?.message || `雪球接口 code=${data?.code}`);
       return data;
+    }
+    async function retryHistory(symbol) {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await checkedRequest(`/cubes/rebalancing/history.json?cube_symbol=${encodeURIComponent(symbol)}&count=50&page=1`);
+        } catch (e) {
+          if (controller.signal.aborted || isAbort(e)) throw e;
+          const message = String(e.message || e);
+          if (/\b(401|403|429)\b|限流|频繁|未登录/.test(message) || attempt >= RB_RETRY_COUNT) throw e;
+          await pause(RB_RETRY_BASE_MS * (attempt + 1));
+        }
+      }
     }
     async function worker() {
       while (!throttled) {
@@ -933,12 +953,14 @@
         if (index >= targets.length) return;
         const symbol = targets[index];
         for (const task of ['history', 'holdings']) {
+          if (mode !== 'single' && (task === 'history' ? isRbFresh(symbol) : isHoldingFresh(symbol))) continue;
           if (throttled || currentRun !== state.runId || controller.signal.aborted) break;
           try {
             if (task === 'history') {
-              const data = await checkedRequest(`/cubes/rebalancing/history.json?cube_symbol=${encodeURIComponent(symbol)}&count=50&page=1`);
+              const data = await retryHistory(symbol);
               if (controller.signal.aborted || currentRun !== state.runId) return;
               state.rebalancingStates.set(symbol, parseLatestRebalance(data));
+              state.rebalanceErrors.delete(symbol);
               rbOk++;
             } else {
               const data = await checkedRequest(`/cubes/rebalancing/current.json?cube_symbol=${encodeURIComponent(symbol)}`);
@@ -948,7 +970,8 @@
             }
           } catch (e) {
             if (controller.signal.aborted || isAbort(e)) return;
-            if (task === 'history') rbFailed++; else holdingFailed++;
+            if (task === 'history') { rbFailed++; state.rebalanceErrors.set(symbol, String(e.message || e).slice(0,180)); }
+            else holdingFailed++;
             if (/429|403|限流|频繁/.test(e.message || '')) {
               throttled = true;
               setStatus(`雪球拒绝/限制请求，已停止批量更新：调仓成功 ${rbOk}、持仓核验成功 ${holdingOk}。未完成项目保留原缓存。`, true);
